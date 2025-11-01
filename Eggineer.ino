@@ -1,15 +1,25 @@
 #include <LiquidCrystal_I2C.h>
 #include <WiFiS3.h>
 #include <ArduinoHttpClient.h>
-#include <ArduinoJson.h>   // <-- Add this
+#include <ArduinoJson.h>
 #include "RTC.h"
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+#include <qrcode.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#define ONE_WIRE_BUS 2
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
 
 int btn_confirm = 8;
 int btn_cancel = 9;
-int btn_1 = 10;
+int btn_1 = 12;
 int btn_2 = 11;
+int btn_3 = 10;
 
 int state = 1;
 // state 1 = เครื่องไม่ได้ทำงาน
@@ -17,7 +27,7 @@ int state = 1;
 // state 3 = เครื่องกำลังทำงาน
 
 int option = 0;
-// option 0 ยังไม่ได้เลือกชนิดการต้มไข่
+
 String type_egg = "";
 
 float waterTemp = 0;
@@ -31,16 +41,15 @@ float secTemp = 0;
 int miin = 0;
 int sec = 0;
 
-unsigned long previousMillis = 0;
-const long interval = 1000;
+unsigned long lastTick = 0; 
+const unsigned long tickInterval = 1000;
 
-// --- Your network credentials ---
-const char ssid[] = "Muhaha";
-const char pass[] = "12345678";
+const char ssid[] = ""; // WiFi SSID
+const char pass[] = ""; // WiFi Password
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-const char serverAddress[] = "tough-singers-design.loca.lt";
+const char serverAddress[] = ""; // Server URL or IP
 const int port = 80;
 WiFiClient wifi;
 
@@ -51,10 +60,18 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", 7 * 3600);
 
 StaticJsonDocument<256> responseDoc;
 
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+String token = "";
+
+
 void setup() {
-  // put your setup code here, to run once:
   Serial.begin(9600);
-  while (!Serial);
+  while (!Serial)
+    ;
 
   // --- Connect to WiFi ---
   Serial.print("Connecting to WiFi: ");
@@ -75,35 +92,62 @@ void setup() {
   pinMode(btn_cancel, INPUT);
   pinMode(btn_1, INPUT);
   pinMode(btn_2, INPUT);
+  pinMode(btn_3, INPUT);
 
   lcd.init();
   lcd.backlight();
-  display();
+  lcdDisplay();
+
+  if (!display.begin(0x3C, true)) {
+    Serial.println(F("SH1106 allocation failed"));
+    for (;;)
+      ;
+  }
+
+  display.clearDisplay();
+  display.display();
+  sensors.begin();
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
   checkButton();
+  sensors.requestTemperatures();
+
+  lcdDisplay();
+  delay(500);
 }
 
 void checkButton() {
-  if (digitalRead(btn_1) == HIGH) {
+  if (digitalRead(btn_3) == HIGH) {
     // Cooked Egg
     option = 1;
     state = 2;
     temp_eggsuccess = 90;
-    diameter = 42;
+    diameter = 45;
     type_egg = "Cooked";
-    display();
+    lcdDisplay();
   } else if (digitalRead(btn_2) == HIGH) {
     option = 2;
     state = 2;
-    display();
+    temp_eggsuccess = 82;
+    diameter = 45;
+    type_egg = "bael eggs";
+    lcdDisplay();
+  } else if (digitalRead(btn_3) == HIGH) {
+    option = 3;
+    state = 2;
+    temp_eggsuccess = 73;
+    diameter = 45;
+    type_egg = "Soft-boiled";
+    lcdDisplay();
   } else if (digitalRead(btn_confirm) == HIGH && state == 2) {
     state = 3;
     option = 0;
+    lcd.clear();
+    lcd.print("Loading...");
     calculateTime();
-    display();
+    lcd.clear();
+    lcdDisplay();
   } else if (digitalRead(btn_cancel) == HIGH && state == 2) {
     lcd.clear();
     lcd.print("    CANCEL!!      ");
@@ -111,72 +155,101 @@ void checkButton() {
     lcd.print("    CANCEL!!      ");
     delay(1000);
     state = 1;
-    display();
+    lcdDisplay();
   }
 }
 
-void display() {
-  unsigned long currentMillis = millis();
-  if ((currentMillis - previousMillis) >= interval) {
-    lcd.clear();
-    previousMillis = currentMillis;
-    if (state == 3){
-      sec -= 1;
-    }
-  }
+void lcdDisplay() {
+  lcd.clear();
   lcd.home();
+
   if (state == 1) {
     lcd.print("Choose egg type");
-  } else if (state == 2 && option == 1) {
-    lcd.print("cooked eggs");
-    lcd.setCursor(0, 1);
-    lcd.print("Are you sure Y/N");
-
-  } else if (state == 2 && option == 2) {
-    lcd.print("soft-boiled eggs");
-    lcd.setCursor(0, 1);
-    lcd.print("Are you sure Y/N");
-  } else if (state == 3) {
-    if (sec < 0 && miin != 0){
-      sec = 59;
-      miin -= 1;
+    float tempC = sensors.getTempCByIndex(0);
+    if (state == 1) {
+      lcd.setCursor(0, 1);
+      lcd.print(tempC);
+      lcd.print(" ");
+      lcd.print((char)223);
+      lcd.print("C");
     }
+    return;
+  }
 
-    if (miin < 10){
-      lcd.setCursor(8, 1);
-      lcd.print(miin);
-      lcd.setCursor(7, 1);
-      lcd.print("0");
+  if (state == 2) {
+    if (option == 1) {
+      lcd.print("cooked eggs");
+      lcd.setCursor(0, 1);
+      lcd.print("Are you sure Y/N");
+    } else if (option == 2) {
+      lcd.print("bael eggs");
+      lcd.setCursor(0, 1);
+      lcd.print("Are you sure Y/N");
+    } else if (option == 3) {
+      lcd.print("soft-boiled eggs");
+      lcd.setCursor(0, 1);
+      lcd.print("Are you sure Y/N");
+    }
+    return;
+  }
+
+  
+  unsigned long now = millis();
+  if (now - lastTick >= 1000) {
+    lastTick = now;
+    // ลดเวลา 1 วิ
+    sec--;
+    if (sec < 0) {
+      if (miin > 0) {
+        miin -= 1;
+        sec = 59;
+      } else {
+        // ถึง 0:00
+        sec = 0;
+      }
+    }
+  }
+
+  // แสดงเวลา
+  lcd.setCursor(0,0);
+  lcd.print("Time :");
+  if (miin < 10) {
+    lcd.print("0");
+    lcd.print(miin);
+  } else {
+    lcd.print(miin);
+  }
+  lcd.print(":");
+  if (sec < 10) {
+    lcd.print("0");
+    lcd.print(sec);
+  } else {
+    lcd.print(sec);
+  }
+
+  if (miin == 0 && sec == 0) {
+    lcd.clear();
+    lcd.home();
+    lcd.print(" YOUR EGG READY");
+    state = 1;
+    display.clearDisplay();
+    display.display();
+
+    String postData = "{\"token\":\"" + token + "\"}";
+
+    if (makePostRequest("/sendsuccess", postData, responseDoc)){
+      const char* data = responseDoc["status"];
+      Serial.println("\n--- Parsed POST Response ---");
+      Serial.print("Status: "); Serial.println(data);
     } else {
-      lcd.setCursor(7, 1);
-      lcd.print(miin);
+      Serial.println("POST request failed.");
     }
-    lcd.setCursor(9, 1);
-    lcd.print(":");
-    if (sec < 10){
-      lcd.setCursor(11, 1);
-      lcd.print(sec);
-      lcd.setCursor(10, 1);
-      lcd.print("0");
-    } else {
-      lcd.setCursor(10, 1);
-      lcd.print(sec);
-    }
-
-    if (sec == 0 && miin == 0){
-      lcd.clear();
-      lcd.home();
-      lcd.print(" YOUR EGG READY");
-      state = 1;
-      delay(2000);
-    }
-    display();
+    delay(2000);
   }
 }
 
 void calculateTime() {
-  // TEMP
-  waterTemp = 100;
+  waterTemp = sensors.getTempCByIndex(0);
   if (waterTemp < temp_eggsuccess) {
     lcd.clear();
     lcd.home();
@@ -187,7 +260,7 @@ void calculateTime() {
     lcd.clear();
     option = 0;
     state = 1;
-    display();
+    lcdDisplay();
     return;
   }
 
@@ -197,11 +270,8 @@ void calculateTime() {
   temp = 0.0015 * (pow(diameter, 2) * log(tempWE / tempWS));
   secTemp = (temp - (int)temp) * 60;
 
-  // TEMP
-  // sec = int(secTemp);
-  sec = 10;
-  // miin = (int)temp;
-  miin = 0;
+  sec = int(secTemp);
+  miin = (int)temp;
 
   Serial.print(miin);
   Serial.print(":");
@@ -223,26 +293,23 @@ void calculateTime() {
   end_minute = end_minute % 60;
   end_hour = end_hour % 24;
 
-  String postData = "{\"type\":\"" + type_egg +
-                    "\",\"start_time\":\"" + start_hour + ":" + start_minute + ":" + start_minute +
-                    "\",\"end_time\":\"" + end_hour + ":" + end_minute + ":" + end_minute +"\"}";
+  String postData = "{\"type\":\"" + type_egg + "\",\"start_time\":\"" + start_hour + "." + start_minute + "." + start_minute + "\",\"end_time\":\"" + end_hour + "." + end_minute + "." + end_minute + "\"}";
 
   Serial.println(postData);
-  if (makePostRequest("/createtoken", postData, responseDoc)){
-    const char* status = responseDoc["status"];
-    const char* message = responseDoc["message"];
-    const char* data = responseDoc["data_received"]["token"];
+  if (makePostRequest("/createtoken", postData, responseDoc)) {
+    const char* data = responseDoc["token"];
 
     Serial.println("\n--- Parsed POST Response ---");
-    Serial.print("Status: "); Serial.println(status);
-    Serial.print("Message: "); Serial.println(message);
-    Serial.print("Token: "); Serial.println(data);
+    Serial.print("Token: ");
+    Serial.println(data);
+    token = data;
+    makeQRcode(data);
   } else {
     Serial.println("POST request failed.");
   }
 }
 
-bool makePostRequest(const char* path, const String& body, JsonDocument& doc){
+bool makePostRequest(const char* path, const String& body, JsonDocument& doc) {
   Serial.print("\nMaking POST request to: ");
   Serial.println(path);
 
@@ -275,4 +342,29 @@ bool makePostRequest(const char* path, const String& body, JsonDocument& doc){
     return false;
   }
   return true;
+}
+
+void makeQRcode(const char* token) {
+  display.clearDisplay();
+  display.setContrast(0x10);
+
+  QRCode qrcode;
+  uint8_t qrcodeData[qrcode_getBufferSize(3)];
+  qrcode_initText(&qrcode, qrcodeData, 2, ECC_LOW, token);
+
+  int qrSize = qrcode.size;
+  int pixelSize = min(SCREEN_WIDTH / qrcode.size, SCREEN_HEIGHT / qrcode.size);
+  int xOffset = (SCREEN_WIDTH - qrSize * pixelSize) / 2;
+  int yOffset = (SCREEN_HEIGHT - qrSize * pixelSize) / 2;
+  // Draw QR code
+  for (int y = 0; y < qrSize; y++) {
+    for (int x = 0; x < qrSize; x++) {
+      if (qrcode_getModule(&qrcode, x, y)) {
+        display.fillRect(xOffset + x * pixelSize, yOffset + y * pixelSize,
+                         pixelSize, pixelSize, SH110X_WHITE);
+      }
+    }
+  }
+
+  display.display();
 }
